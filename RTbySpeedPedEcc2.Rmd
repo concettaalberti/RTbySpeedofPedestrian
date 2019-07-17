@@ -1,0 +1,287 @@
+---
+title: "RTbySpeedAnalysis"
+output: html_document
+---
+
+This documents shows how Reaction Times (RT) to a potential hazard may vary depending on driving speed. 
+The dataset presents two speed categories: highway (1) and city (0). 
+A potential hazard is represented by a pedestrians standing on the sidewalk at 4 or 14 degrees eccentricity.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+require(ggplot2)
+require(GGally) #ggpirs
+require(reshape2) #melt
+#for mixed effects models
+require(lme4)
+require(optimx)
+require(LMERConvenienceFunctions)
+require(boot)
+require(lattice)
+
+#for scatterplot
+require(car)
+
+#these 3 are for correlations
+require(Hmisc)
+require(ggm)
+require(psych)
+require(gdata)
+require(rJava)
+require(Rmisc)
+
+library(grid)
+library(plyr)
+
+require(nlme) #lme This generic function fits a linear mixed-effects model in the formulation described in Laird and Ware (1982) but allowing for nested random effects. The within-group errors are allowed to be correlated and/or have unequal variances.
+require(multcomp)
+require(km.ci)
+
+
+#Set path and read file          
+setwd("/Volumes/124GB USB/TOOLS/AnalysisDemo")
+originalmydataold <-read.table('MinimumDistanceNearPedsScores_stationary_biopeds4.txt', header = TRUE, sep = "")
+originalmydata<- data.frame(originalmydataold)
+lapply(originalmydata, class)
+
+#Explain Coding in Variables
+#conditionstatic is 0 for walking pedestrians and 1 for stationary pedestrians
+
+
+#only include straight driving segments
+wordList1 <- c("turn","curve", "grabber")
+wordList2 <- c("turn","curve")
+mydata1 <-subset(originalmydata, conditionstatic == 1 & !( popUpType %in% wordList1)) #for stationar we exclude list1
+mydata2 <-subset(originalmydata, conditionstatic == 0 & !( popUpType %in% wordList2)) #for biopeds we exclude list2
+mydata <- rbind (mydata1, mydata2)
+
+#Recode variables
+mydata$timely[mydata$timely=="-1"] <- 3 #misses
+mydata$timely[mydata$timely=="-2"] <- 3 #misses
+mydata$timely[mydata$timely=="0"] <- 2 #late
+mydata$timely[mydata$timely=="1"] <- 1 #timely
+
+mydata$pedEccentricity[mydata$pedEccentricity=="-4"] <- 4
+mydata$pedEccentricity[mydata$pedEccentricity=="-14"] <- 14
+mydata$pedEccentricity[mydata$pedEccentricity=="4"] <- 4
+mydata$pedEccentricity[mydata$pedEccentricity=="14"] <- 14
+
+#Calculate new variables and concatenate
+RT = mydata$honkTime-mydata$warpTime
+mydatamodule <- cbind (mydata, RT)
+
+
+#Subset datasets independently for the seeing side and the blindside
+mydataBLINDLARGE <-subset(mydatamodule, pedside == 1 & pedEccentricity == 14)
+dim(mydataBLINDLARGE)
+mydataSELARGE <-subset(mydatamodule, pedside == 0 & pedEccentricity == 14)
+dim(mydataSELARGE)
+mydataBLINDsmall <-subset(mydatamodule, pedside == 1 & pedEccentricity == 4)
+dim(mydataBLINDsmall)
+mydataSEsmall <-subset(mydatamodule, pedside == 0 & pedEccentricity == 4)
+dim(mydataSEsmall)
+
+
+# function for number of observations 
+give.n <- function(x){
+  return(c(y = median(x)*1.05, label = length(x))) 
+  # experiment with the multiplier to find the perfect position
+}
+
+#analyze the small and large eccentricity pedestrians on the seeing side
+dataset<- rbind(mydataSELARGE, mydataSEsmall)
+
+#only include rows with possible Speed values
+datasetpolished<- subset(dataset, dataset$SpeedAtMin >0 & !is.na(dataset$SpeedAtMin))
+
+#only include events when the pedestrian was detected
+DatasetTimelyLate<- subset(datasetpolished, datasetpolished$timely ==1 |datasetpolished$timely ==2)
+
+#assign variables names for plots
+PedEcc <-as.factor(DatasetTimelyLate$pedEccentricity)
+SpeedCat<- as.factor(DatasetTimelyLate$speedcat)
+ReactionTime<-DatasetTimelyLate$RT
+
+#Build Boxplot of Pedestrian Eccentricity for Speed Category
+subset1 <- data.frame(DatasetTimelyLate$pedEccentricity, DatasetTimelyLate$speedcat, DatasetTimelyLate$RT)
+	tmp <- melt(subset1, id=c( "DatasetTimelyLate.pedEccentricity", "DatasetTimelyLate.speedcat"))
+	SpeedCatForpedEccentricity<-ggplot(tmp, aes(factor( DatasetTimelyLate$speedcat), y = value,  fill=as.factor( DatasetTimelyLate$pedEccentricity))) +
+  geom_boxplot() + 
+  facet_wrap(~variable) +
+  stat_summary(fun.data = give.n, geom = "text", fun.y = median, vjust = 1) +
+  theme(legend.title = element_blank())+
+	  scale_x_discrete( breaks=c("0", "1"), labels=c("city", "highway"))+
+	  scale_colour_manual(breaks=c("4", "14"), labels=c("4", "14")) +
+	  labs(y="Reaction Times (secs)", x = "Speed Category")
+
+
+
+#create contrast matrix
+modellmint<-lm(RT ~ as.factor(pedEccentricity) *as.factor(speedcat), data=DatasetTimelyLate)
+#
+group <- paste0(as.factor(DatasetTimelyLate$pedEccentricity), as.factor(DatasetTimelyLate$speedcat))
+#pastes after converting into character class
+modelmatrix<-model.matrix(modellmint)
+#creates a design matrix by expanding factors to a set dummy variables
+group <- aggregate(modelmatrix ~ group, FUN=mean)
+#splits data into subsets, computes summary statistics (used to create a short model matrix)
+rownames(group) <- group$group #changes rownames from incremental numbers to group variable
+(group <- group[,-1]) #delete the column group, which is now rownames
+
+
+
+
+#Created point plots with Confidence Intervals of the mean: Pedestrian Eccentricity by SpeedCat 
+subset2 <- data.frame(PedEcc, SpeedCat, ReactionTime)
+
+tgc <- summarySE(subset2, measurevar="ReactionTime", groupvars=c("PedEcc", "SpeedCat"))
+
+ReactionTimesPedEccbySpeedCat1<- ggplot(tgc, aes(PedEcc, y= ReactionTime, pch=SpeedCat)) +
+	geom_errorbar(aes(ymin=ReactionTime-ci, ymax=ReactionTime+ci, colour=SpeedCat), size=  0.8,width=.1, position=position_dodge(.2)) +
+		geom_point(aes(colour=SpeedCat, shape=SpeedCat),size=  2, stat = "identity", position=position_dodge(.2)) +  ylim(0, 5) + 
+	ggtitle("Reaction Time")+ labs( y= "Reaction Time (sec)") +
+	scale_shape_manual(values=c(19,20),  breaks=c("0", "1"), labels=c("city", "highway")) +
+      scale_colour_manual(values=c("black", "red"),  breaks=c("0", "1"), labels=c("city", "highway")) +
+	scale_linetype_manual(values=c(1,2),  breaks=c("0", "1"), labels=c("city", "highway")) 
+
+ReactionTimesPedEccbySpeedCat<-ReactionTimesPedEccbySpeedCat1+theme(panel.background = element_rect(fill = 'white', colour = 'grey20'), text = element_text(size = 22))+ scale_fill_manual(values=c("#999999", "black"), 
+                         breaks=c("0", "1"), labels=c("city", "highway"))+theme_classic()+ scale_x_discrete( breaks=c("4", "14"), labels=c("4", "14"))
+
+#Created point plots with Confidence Intervals of the mean: SpeedCat by Pedestrian Eccentricity
+ReactionTimesSpeedCatbyPedEcc1<- ggplot(tgc, aes(SpeedCat, y= ReactionTime, pch=PedEcc)) +
+	geom_errorbar(aes(ymin=ReactionTime-ci, ymax=ReactionTime+ci, colour=PedEcc), size=  0.8,width=.1, position=position_dodge(.2)) +
+	geom_line(data=tgc, aes(x=SpeedCat, y=ReactionTime, colour=PedEcc, linetype = PedEcc), size=  0.8,position=position_dodge(.2)) +
+	geom_point(aes(colour=PedEcc, shape=PedEcc),size=  2, stat = "identity", position=position_dodge(.2)) +  ylim(0, 5) + 
+ 	labs( y= "Reaction Times") +
+	scale_shape_manual(values=c(19,19,19),  breaks=c("4", "14"), labels=c("4", "14")) +
+      scale_colour_manual(values=c("#999999", "cyan", "blue"),  breaks=c("4", "14"), labels=c("4", "14")) +
+	scale_linetype_manual(values=c(1,1,1),  breaks=c("4", "14"), labels=c("4", "14")) 
+
+ReactionTimesSpeedCatbyPedEcc<-ReactionTimesSpeedCatbyPedEcc1+theme(panel.background = element_rect(fill = 'white', colour = 'grey20'), text = element_text(size = 22))+ scale_fill_manual(values=c("cyan", "blue"), breaks=c("4", "14"), labels=c("4", "14"))+theme_classic() +
+				 labs( y= "Reaction Times (secs)") +
+				scale_x_discrete( breaks=c("0", "1"), labels=c("City", "Highway"))
+
+
+
+
+
+
+#adding Clustering analysis to split data in 2 groups, with scaled data
+dk<-cbind(DatasetTimelyLate$RT, DatasetTimelyLate$SpeedAtMin)
+dkscaled<-scale(dk)
+classRT<- kmeans(dkscaled, 2, nstart=25)  
+DatasetTimelyLate<-cbind(DatasetTimelyLate,classRT$cluster )
+
+
+#Build Scatterplot showing the 2 Clusters 
+subset <- data.frame(DatasetTimelyLate$speedcat, DatasetTimelyLate$timely, DatasetTimelyLate$RT, classRT$cluster)
+tmp <- melt(subset, id=c( "DatasetTimelyLate.speedcat", "DatasetTimelyLate.timely", "classRT.cluster"))
+
+ScatterCluster<-ggplot(DatasetTimelyLate, aes(x=SpeedAtMin, y=RT, color=as.factor(classRT$cluster))) + 
+  geom_point(shape=1)+
+  labs(y="Reaction Times (secs)", x = "Speed")+
+  scale_color_manual(name = "Cluster",labels = c("1", "2"), values = c("black", "magenta"))
+
+#Build Scatterplot showing the Speed Category Split
+ScatterSpeedCategory<-ggplot(DatasetTimelyLate, aes(x=SpeedAtMin, y=RT, color=as.factor(speedcat))) + 
+  geom_point(shape=1)+
+  labs(y="Reaction Times (secs)", x = "Speed")+
+  scale_color_manual(name = "Speed Category",labels = c("City", "Highway"), values = c("purple", "green"))
+
+#Build Scatterplot showing the Potential Collision Split
+ScatterCollision<-ggplot(DatasetTimelyLate, aes(x=SpeedAtMin, y=RT, color=as.factor(timely))) + 
+  geom_point(shape=1)+
+  labs(y="Reaction Times (secs)", x = "Speed")+
+  scale_color_manual(name = "Potential Collision",labels = c("NO", "YES"), values = c("blue", "red"))
+  
+
+
+#Build Boxplot showing the the Potential Collisions by Clusters distributions
+CollisionbyCluster<-ggplot(tmp, aes(factor( DatasetTimelyLate.timely), y = value,  fill=as.factor( classRT.cluster ))) +
+  geom_boxplot() + 
+  facet_wrap(~variable) +
+  stat_summary(fun.data = give.n, geom = "text", fun.y = median, vjust = 1) +
+ # theme(legend.title = element_blank())+
+   scale_x_discrete( breaks=c("1", "2"), labels=c("NO", "YES"))+
+  scale_fill_discrete(name = "Cluster", breaks=c("1", "2"), labels=c("Low Speed", "High Speed"))+
+                        labs(y="Reaction Times (secs)", x = "Potential Collision")
+
+
+
+```
+
+
+## Descriptives
+Reaction Times 
+```{r dataset)}
+summary(DatasetTimelyLate$RT)
+SpeedCatForpedEccentricity
+##dataset$scenario
+```
+
+
+
+
+## Statistical Analysis
+```{r dataset, echo=TRUE, message=FALSE, warning=FALSE}
+
+test <- lm  (RT ~ as.factor(speedcat), data = DatasetTimelyLate)
+summary(test)
+
+
+test <- lme  (RT ~ as.factor(pedEccentricity) *as.factor(speedcat), random= ~1 | subject, data=DatasetTimelyLate)
+summary(test)
+anova(test)
+
+rbind(group["40",] - group["140",], #4 City  vs  14 City
+      group["41",] - group["141",]) #4 Highway vs 14 Highway 
+
+contrast.matrix <- rbind(
+  `4:city vs. 14:city` = c(0, -1, 0, 0),
+  `4:highway vs. 14:highway`     = c(0, -1, 0, -1))
+
+summary(glht(test, contrast.matrix), test = adjusted("bonferroni"))
+
+ReactionTimesPedEccbySpeedCat
+
+rbind(group["40",] - group["41",], #4 City vs 4 Highway
+      group["140",] - group["141",]) #14 City vs 14 Highway
+
+
+contrast.matrix <- rbind(
+  `4:city vs. 4:highway` = c(0, 0, -1, 0),
+  `14:city vs. 14:highway`     = c(0, 0, -1, -1))
+
+summary(glht(test, contrast.matrix), test = adjusted("bonferroni"))
+
+ReactionTimesSpeedCatbyPedEcc
+
+dk<-cbind(DatasetTimelyLate$RT, DatasetTimelyLate$SpeedAtMin)
+dkscaled<-scale(dk)
+classRT<- kmeans(dkscaled, 2, nstart=25)  
+
+ScatterCluster
+
+ScatterSpeedCategory
+
+ScatterCollision
+
+
+CollisionbyCluster
+
+
+
+
+
+```
+
+
+##Conclusions 1
+RTs are larger in the High Speed Category (Highway) than in the Low Speed Category (City). 
+RTs also depend on the eccentricity of the potential hazard: objects that are more peripheral are reported later than more central objects. 
+
+Cluster Analysis successfully identified all the high speeds events.
+Potential collisions fell within the High Speed cluster. 
+
