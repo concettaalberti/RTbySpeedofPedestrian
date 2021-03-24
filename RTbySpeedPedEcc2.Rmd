@@ -232,6 +232,7 @@ SpeedCatForpedEccentricity
 
 test <- lm  (RT ~ as.factor(pedEccentricity) *as.factor(speedcat), data = DatasetTimelyLate)
 summary(test)
+anova(test)
 
 test <- lme  (RT ~ as.factor(pedEccentricity) *as.factor(speedcat), random= ~1 | subject, data=DatasetTimelyLate)
 summary(test)
