@@ -41,7 +41,7 @@ require(km.ci)
 
 
 #Set path and read file          
-setwd("/Volumes/124GB USB/TOOLS/AnalysisDemo")
+#setwd("AnalysisDemo")
 originalmydataold <-read.table('MinimumDistanceNearPedsScores_stationary_biopeds4.txt', header = TRUE, sep = "")
 originalmydata<- data.frame(originalmydataold)
 lapply(originalmydata, class)
@@ -227,9 +227,11 @@ SpeedCatForpedEccentricity
 ## Statistical Analysis
 ```{r dataset, echo=TRUE, message=FALSE, warning=FALSE}
 
-test <- lm  (RT ~ as.factor(speedcat), data = DatasetTimelyLate)
-summary(test)
+#test <- lm  (RT ~ as.factor(speedcat), data = DatasetTimelyLate)
+#summary(test)
 
+test <- lm  (RT ~ as.factor(pedEccentricity) *as.factor(speedcat), data = DatasetTimelyLate)
+summary(test)
 
 test <- lme  (RT ~ as.factor(pedEccentricity) *as.factor(speedcat), random= ~1 | subject, data=DatasetTimelyLate)
 summary(test)
